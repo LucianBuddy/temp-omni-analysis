@@ -1,0 +1,54 @@
+[
+  {
+    "date": "2026-06-26",
+    "code": "002475",
+    "name": "立讯精密",
+    "direction": "偏多",
+    "confidence": 0.6,
+    "price": 74.42,
+    "factor_detail": "",
+    "source": "temp-omni",
+    "result": null,
+    "result_price": null,
+    "result_chg": null
+  },
+  {
+    "date": "2026-06-26",
+    "code": "002475",
+    "name": "立讯精密",
+    "direction": "偏空",
+    "confidence": 0.75,
+    "price": 68.24,
+    "factor_detail": "放量暴跌-8.3%,RSI未超卖,趋势破位,不接飞刀",
+    "source": "temp-omni",
+    "result": null,
+    "result_price": null,
+    "result_chg": null
+  },
+  {
+    "date": "2026-06-26",
+    "code": "601138",
+    "name": "工业富联",
+    "direction": "偏空",
+    "confidence": 0.7,
+    "price": 71.6,
+    "factor_detail": "趋势性下跌-7%,量正常未见底特征,回避",
+    "source": "temp-omni",
+    "result": null,
+    "result_price": null,
+    "result_chg": null
+  },
+  {
+    "date": "2026-06-26",
+    "code": "600406",
+    "name": "国电南瑞",
+    "direction": "中性",
+    "confidence": 0.5,
+    "price": 22.94,
+    "factor_detail": "逆势企稳+0.48%,但大盘不稳,22.68防线",
+    "source": "temp-omni",
+    "result": null,
+    "result_price": null,
+    "result_chg": null
+  }
+]

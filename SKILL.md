@@ -1,303 +1,693 @@
 ---
-name: etf-fund-analysis
-description: A股场内基金/ETF/LOF分析。当用户请求基金分析、ETF评估、基金持仓、费率对比、基金业绩时触发。
-version: 1.0.0
+name: temp-omni-analysis
+description: A股短线/日内交易分析（事件驱动+技术面）。当用户请求当日走势、短线研判、结合美股/新闻看今日时触发。
+version: 2.1.0
+changelog: CHANGELOG.md
 ---
 
-# etf-fund-analysis — 基金/ETF分析 v1.0.0
+# temp-omni-analysis — A股短线/日内交易分析 v2.1.0
 
-当用户请求 **基金分析、ETF评估、基金持仓、基金业绩** 时按此 SKILL 执行。
-
----
-
-## 前置判断 1：基金类型
-
-| 类型 | 特征 | 分析侧重 |
-|------|------|---------|
-| **ETF** | 场内交易，追踪指数 | 跟踪误差 > 费率 > 规模 > 流动性 > 折溢价 |
-| **LOF** | 场内+场外，可主动可被动 | 同上+折溢价套利机会 |
-| **主动基金** | 基金经理选股 | 基金经理 > 持仓 > 超额收益 > 风格漂移 |
-| **货币/债券** | 低风险 | 收益率 > 规模 > 费率 > 久期 |
-
-未明确类型时默认按 ETF 分析。
+当用户请求 **当日走势、短线研判、结合美股/新闻看今日** 时触发。
 
 ---
 
-## 前置判断 2：分析维度
+## 触发条件
 
-| 维度 | 适用场景 | 输出 |
+触发关键词："下午/上午走势"、"结合昨晚美股"、"今天/短线怎么看"、"盘后复盘"。排除"长期/基本面/估值/该不该持有"（转 omni-lt-stock-analysis）。非交易日取上一完整交易日数据。
+
+---
+
+## 前置判断 1：时间窗口分类
+
+| 窗口 | 时间 | 侧重 |
+|------|------|------|
+| **盘前** | 8:30-9:25 | 美股>新闻>竞价 |
+| **上午盘** | 9:30-11:30 | 量价>北向>行业 |
+| **午间→下午** | 11:30-15:00 | 趋势延续>反转>尾盘 |
+| **盘后复盘** | 15:00-17:00 | 全天+龙虎榜+次日 |
+| **隔夜/周末** | 非交易日 | 美股+消息+下周 |
+
+---
+
+## scripts/ 模块一览
+
+```
+temp-omni-analysis/
+├── scripts/
+│   ├── data.py         # 轻量数据层 + ATR/RSI/数据校验/市场可交易性/动量/成交量深度
+│   ├── cache.py        # 文件缓存系统（TTL自动清除）
+│   ├── patterns.py     # K线形态自动识别
+│   ├── scoring.py      # 因子评分系统 + 多周期共振 + 相对强度
+│   ├── engine.py       # [v1.6.0] 一键分析引擎（run_analysis）
+│   ├── screener.py     # [v1.7.0] 批量筛选排序
+│   ├── backtest_st.py  # [v2.0.0] 短线信号历史回测
+│   └── tracker.py      # 预测记录与复盘模块（含自动回填）
+├── cache/              # 缓存目录（自动创建）
+├── predictions.json    # 预测记录文件（自动创建）
+├── SKILL.md
+└── CHANGELOG.md
+```
+
+### v2.1.0 新增功能
+
+| 模块 | 新增函数 | 用途 |
 |------|---------|------|
-| **全面评估** | 首次分析/投资决策 | 费率+持仓+业绩+跟踪误差+结论 |
-| **持仓分析** | 用户问"买的什么" | TOP10+行业分布+集中度 |
-| **业绩对比** | 用户问"收益怎么样" | 多区间收益+同类排名+基准对比 |
-| **费率对比** | 用户问"贵不贵" | 管理费+托管费+同类比较 |
+| `engine.py` | `summarize_analysis()` | 自动生成一句话分析摘要 |
+| `screener.py` | `screen_and_backtest()` | 批量筛选+回测验证闭环 |
 
-默认走全面评估。
+### v2.0.0 新增功能
 
----
+| 模块 | 新增函数 | 用途 |
+|------|---------|------|
+| `data.py` | `detect_momentum_shift()` | 趋势加速/衰减检测，反转K线识别 |
+| `data.py` | `analyze_volume_profile()` | 成交量能深度分析（筹码/吸筹/派发） |
+| `engine.py` | — | run_analysis() 集成 L4+L1+L3（尾盘竞价感知） |
+| `backtest_st.py` | `backtest_short_term()`, `print_backtest_report()` | 短线信号历史回测模块 |
 
-## Step 1：数据采集（三级通道）
+### v1.9.0 新增功能
 
-**调用顺序**：通道A（基金基础数据，强制）→ 通道W（wiki，强制）→ 通道S（联网搜索，条件触发）
+| 模块 | 新增函数 | 用途 |
+|------|---------|------|
+| `data.py` | `check_limit_status()` | 涨跌停板分析（封板/逼近/正常） |
+| `scoring.py` | `industry_peer_comparison()` | 行业联动对比（领涨/领跌/跟随/逆势） |
+| `engine.py` | — | run_analysis() 集成 K1+K3 |
 
-**时间预算**：≤20s。单项超时则跳过标记缺失。
+### v1.8.0 新增功能
 
-### 通道 A — 基础数据
+| 模块 | 新增函数 | 用途 |
+|------|---------|------|
+| `tracker.py` | `auto_fill_pending()` | 自动回填3日后的预测结果，完成复盘闭环 |
+| `data.py` | `assess_market_tradeability()` | 四大指数评估市场短线交易环境 |
+| `engine.py` | — | run_analysis() 集成市场可交易性评估 + 自动交易计划(入场/止损/止盈) |
 
-| 数据项 | 优先级 | 获取方式 | fallback | 装载量 |
-|-------|-------|---------|---------|--------|
-| 基金名称/代码/类型 | P0 | `tencent_quote([code])` 取名称+价格+涨跌 | 无 | 1条 |
-| 场内价与涨跌幅 | P0 | 同上 腾讯索引3/32 | 无 | 2数值 |
-| 基金规模(亿)/份额 | P1 | 天天基金/东财基金API 取净值规模 | 标注不可用 | 1数值 |
-| 管理费/托管费 | P1 | 天天基金费率页 或 基金公告 | 标注不可用 | 2数值 |
-| TOP10重仓股及占比 | P1 | 天天基金持仓页 取代码+占比 | 标注不可用 | 最多10条 |
-| 近期业绩(1月/3月/1年) | P1 | 天天基金业绩页 | 标注不可用 | 3数值 |
-| 同类排名 | P2 | 天天基金排名页 | 跳过 | 分位值 |
-| 基金经理(主动基金) | P2 | 天天基金经理页 | 跳过 | 姓名+任职年 |
+### v1.7.0 新增功能
 
-#### ETF特有数据（ETF类型时额外取）
+| 模块 | 新增函数 | 用途 |
+|------|---------|------|
+| `data.py` | `infer_fund_activity()` | 从成交额+成交量推断资金活跃度（无需东财API） |
+| `data.py` | `detect_daily_trend()` | 日线级别趋势判定（为短线提供中线大背景） |
+| `screener.py` | `screen_stocks()` | 批量筛选多只股票并对比排序 |
+| `screener.py` | `print_screen_results()` | 筛选结果格式化打印 |
+| `engine.py` | — | run_analysis() 集成 H4/H5，结果新增 fund_activity + daily_trend |
 
-| 数据项 | 获取方式 | 说明 |
-|-------|---------|------|
-| 跟踪指数 | 基金公告/天天基金 | 如"中证绿色电力指数" |
-| 指数成分股特征 | 天天基金指数页或`web_fetch("指数名 成分股")` | 如"石油石化~80%+煤炭~20%" |
-| 跟踪误差 | 年报季报中的跟踪偏离度 | 越小越好(<0.2%为优) |
-| 净值(NAV) | 天天基金ETF净值页 或 `web_fetch("基金代码 净值")`取最新净值 | 腾讯报价不提供净值 |
-| 折溢价率 | `(场内价 - 净值) / 净值 × 100` | 溢价>1%需警惕，折价>1%可关注 |
-| 近1月/3月/1年收益 | 天天基金业绩页 或 从K线数据自行计算区间收益率 | 需净值复权计算 |
-| 分红记录 | 天天基金分红页 或 基金公告 | 年化分红率参考 |
-| 最大回撤/波动率 | 天天基金风险分析页 或 从60日K线计算 | 可估算短期波动 |
-| 重仓股TOP10 | 天天基金持仓页 `shc` 接口或 `web_fetch("基金代码 持仓")` | 判断风格和集中度 |
-| 同类ETF对比 | `tencent_quote([同类ETF代码])` | 规模/费率/换手率对比 |
+### v1.6.0 新增功能
 
-### 通道 W — Wiki（强制）
-
-`memory_search("基金代码/名称 分析")` → **必须执行**。输出"找到N条匹配"或"未找到匹配"。
-
-### 通道 S — 联网搜索（条件触发）
-
-触发条件：
-- 通道A无法获取持仓/费率数据 → `web_fetch("基金代码 最新持仓")`
-- 规模 < 5000万或连续缩量下降：自动搜索"基金代码 清盘"确认 → `web_fetch("基金代码 清盘 公告")`
-- 基金经理变更 → `web_fetch("基金代码 公告")`
-- 用户明确要求
+| 模块 | 新增函数 | 用途 |
+|------|---------|------|
+| `data.py` | `compute_atr()`, `detect_volatility_regime()` | ATR波动率止损/止盈计算 |
+| `data.py` | `compute_rsi()` | RSI超买超卖信号 |
+| `data.py` | `validate_kline()` | K线数据完整性校验 |
+| `data.py` | `baidu_kline_with_ma(ktype)` | 多周期K线支持（日线/5/15/30/60分钟） |
+| `scoring.py` | `score_multi_timeframe()` | 多周期均线共振评分 |
+| `scoring.py` | `relative_strength()`, `score_relative_strength()` | 个股 vs 板块/大盘相对强度 |
+| `engine.py` | `run_analysis()` | 一键分析引擎，替代手动9步调用 |
 
 ---
 
-## 📐 数据摘要（Step 1.5）
+## Step 1：数据采集
 
-### 进上下文的紧凑结构
+**调用顺序**：批次1（强制）→ Wiki通道（强制）→ 短线价值判断 → 联网搜索（可选）
+
+### 批次 1 — 自建数据通道（scripts/data.py + scripts/cache.py）
 
 ```python
-fund = {
-    # 基本信息
-    "code":"","name":"","type":"ETF",  # type:ETF/LOF/主动/货币
-    "price":0.0,"nav":0.0,"prem_pct":0.0,
-    "size_yi":0.0,"mgmt_fee":0.0,"cust_fee":0.0,
-    "turnover":0.0,
-    
-    # 业绩
-    "ret_1m":0.0,"ret_3m":0.0,"ret_1y":0.0,"ret_3y":0.0,
-    "rank_pct":0.0,"max_drawdown":0.0,"div_yield":0.0,
-    
-    # ETF特有
-    "index_name":"","track_err":0.0,
-    "peers":[],
-    
-    # 持仓
-    "holdings":[],"holding_top_pct":0.0,
-    "holdings_scanned":[],  # 已扫描[{"code","pe","pb","chg","note"}] note="海外股暂缺"等
-    "industry_dist":{},
-    
-    # 主动特有
-    "manager":"","mgr_years":0,"mgr_size":0.0,
-    "style":"",
-    
-    # 元数据
-    "ts":"","src":"","n_ok":False,
+from scripts.data import tencent_quote, baidu_kline_with_ma, sina_us_quote
+
+# 三指数
+index_data = tencent_quote(["000001", "399001", "399006"])
+
+# 个股行情
+quote = tencent_quote([code])
+if code in quote:
+    quote = quote[code]
+else:
+    quote = {}
+
+# K线 + MA5/10/20
+kline = baidu_kline_with_ma(code)
+
+# 美股隔夜
+us = sina_us_quote()
+```
+
+| 数据项 | 优先级 | 函数 | fallback |
+|-------|-------|------|---------|
+| 三指数当日涨跌 | P0 | `tencent_quote(["000001","399001","399006"])` | 无 |
+| 个股价/开/高/低/昨收 | P0 | `tencent_quote([code])[code]` | 无 |
+| 换手率/量比/成交额 | P0 | `tencent_quote([code])[code]` | 无 |
+| 近60根K线+MA5/10/20 | P0 | `baidu_kline_with_ma(code)` | 标注不可用 |
+| 美股隔夜(DJI/IXIC/INX) | P1 | `sina_us_quote()` | 标注数据不可用 |
+
+**自动缓存**：脚本数据会自动通过 scripts/cache.py 缓存。缓存 TTL：K线1小时、行情5分钟、新闻30分钟、市场30分钟。如需强制刷新可调用 `cache_clear(category)`。
+
+### 通道 W — Wiki（强制，批次1后立即执行）
+
+`memory_search("股票名 短线")` + `memory_search("股票代码")` → **必须执行这2次搜索，不得跳过**。输出格式："找到N条匹配" 或 "未找到匹配"（无匹配也必须在报告中标记此结果）。
+
+### 通道 S — 联网搜索（仅 wiki 仍不足时触发）
+
+`web_fetch("股票名 + 事件 + 日期")` 取标题+摘要前200字。触发条件：突发政策/wiki未覆盖/用户明确要求。
+
+### 批次 2 — 东财通道（限流）
+
+| 数据项 | 函数来源 | fallback |
+|-------|---------|---------|
+| 涨跌家数 | 东财 `clist` | 标注不可用 |
+| 行业TOP/BOTTOM5 | 东财 `clist fs=m:90+t:2` | 联网搜索补充 |
+| 当日主力净额(万元) | 东财 fund_flow 接口 | 跳过资金因子 |
+| 近20日主力累计(万元) | 东财 fund_flow_120d 接口 | 同上 |
+| 全球快讯10条 | 东财 np-weblist | 东财不可用→**必须**执行`web_fetch("行业名 最新动态")`取摘要200字 |
+| 个股当日新闻 | 东财 search-api | 东财不可用→**必须**执行`web_fetch("股票名 最新公告")`取摘要200字 |
+
+### 批次 3 — 北向+同花顺
+
+| 数据项 | 函数来源 | fallback |
+|-------|---------|---------|
+| 北向当日净流入 | `hsgt_realtime()` 末行 | 盘中/盘后确认 |
+| 题材归因 | `ths_hot_reason()` 当该股在名单中 | 跳过 |
+
+**东财全不可用** → 降级输出概率，标注"基于腾讯/新浪数据"。
+
+### 数据摘要 + 数据校验（Step 1.5）
+
+使用 `build_short_summary` 将原始数据预处理为结构化摘要：
+
+```python
+from scripts.data import build_short_summary, validate_kline, infer_fund_activity
+
+ss = build_short_summary(quote, kline, us, index_data)
+
+# v1.6.0: K线数据完整性校验
+kline_valid = validate_kline(kline.get("bars", []))
+if not kline_valid["valid"]:
+    warnings.extend(kline_valid["warnings"])
+    # 注意 kline_valid["valid"]=False 表示数据不可靠，降级输出
+
+# v1.7.0: 资金流自动推断（无需东财API）
+fund_info = infer_fund_activity(quote, kline)
+# fund_info.activity_label: "放量" / "正常" / "缩量"
+# fund_info.inferred_direction: "放量上涨" / "放量下跌" / "缩量上涨" / "缩量下跌" / "正常"
+# fund_info.net_direction: 1=净流入推断, -1=净流出推断, 0=中性
+```
+
+LLM 直接从 `ss` 中读取各指标值。`ss` 包含：
+- 个股行情：`p`/`o`/`h`/`l`/`pc`/`chg`/`turn`/`vr`/`amt`
+- 均线排列：`ma5`/`ma10`/`ma20`/`ma_pos`（"多头"/"空头"/"震荡"）
+- 量能趋势：`avg_vol_5d`/`avg_vol_20d`/`trend_5d`（近5日累计涨幅%）
+- 支撑阻力：`S1`（日内最低）/`S2`（min(近20日最低×0.98, MA20)）/`R1`（日内最高）/`R2`（max(MA5, MA10)）
+- 美股传导：`us_dji`/`us_ixic`/`us_inx`/`us_dir`（"同向涨"/"同向跌"/"分歧"）
+- 大盘指数：`sh`/`sz`/`cyb`（有index数据时）
+
+`validate_kline()` 返回包含 `valid`、`warnings`、`n_trading_halt`（疑似停牌天数）和 `n_gaps`（交易日跳跃次数）。
+
+`infer_fund_activity()` 通过当天成交额 vs 近20日均成交额 自动推断资金方向，无需东财API：
+- 放量上涨 → 推断资金净流入
+- 放量下跌 → 推断资金净流出
+- 缩量/正常量 → 中性
+- 该推断会自动传递到 Step 5 的 fund_flow 因子评分
+
+---
+
+## ⏱ 短线价值判断（批次1+wiki后执行）
+
+**快速通过（任一即可）**：近5日累计±>10% / 换手率>3% / 有重大公告 / wiki查匹配。否则执行完整5条件检查（≥2通过）：换手率>阈值(按市值分档) / 涨跌±>3%或5日>8% / 板块TOP/BOTTOM / 龙虎榜 / 有新闻。
+
+---
+
+## Step 2-4：技术分析 + 事件归因 + 美股传导
+
+### 技术分析（scripts/data.py + patterns.py）
+
+**v2.0.0 新增动量趋势检测：**
+
+```python
+from scripts.data import detect_momentum_shift
+
+# 检测趋势加速/衰减
+momentum = detect_momentum_shift(bars)
+# momentum 输出:
+#   "momentum" — "加速上涨"/"加速下跌"/"衰减上涨"/"衰减下跌"/"无趋势"
+#   "size_trend" — "扩大"/"收缩"/"稳定"（实体大小趋势）
+#   "consecutive_direction" — 连续同向K线数（+连涨/-连跌）
+#   "reversal_candle_detected" — 是否出现潜在反转K线
+#   "reversal_detail" — 十字星/长下影/长上影描述
+#   "detail" — 一句话描述
+```
+
+**v2.0.0 新增成交量能深度分析：**
+
+```python
+from scripts.data import analyze_volume_profile
+
+# 成交量能深度分析
+vp = analyze_volume_profile(bars, current_vol_ratio=ss.get("vr", None))
+# vp 输出:
+#   "volume_pattern" — "放量上涨"/"放量下跌"/"缩量企稳"/"缩量阴跌"/"正常"
+#   "abnormal_volume" — 是否有异常放量（最大量>均值×2.5）
+#   "accumulation_signal" — 是否检测到吸筹信号（缩量+企稳）
+#   "distribution_signal" — 是否检测到派发信号（放量+连跌）
+#   "volatility_shrink" — 波动率收缩（缩量+振幅缩小，变盘前兆）
+#   "max_volume_position" — 最大量在价格区间的位置（顶部/底部/中部）
+#   "detail" — 一句话描述
+```
+
+**v1.8.0 新增市场可交易性评估：**
+
+```python
+from scripts.data import assess_market_tradeability
+
+# 评估四大指数（上证/深成/创业板/科创50）是否适合短线交易
+market = assess_market_tradeability(index_data)
+# market 输出:
+#   "tradeable" — True=适合交易, False=不适合
+#   "sentiment" — "乐观"/"中立"/"悲观"/"分化"
+#   "index_agreement" — "一致上涨"/"一致下跌"/"分化"
+#   "volatility_warning" — 是否有指数波动>2%
+#   "detail" — 一句话描述
+```
+
+市场可交易性为短线提供大盘环境评估：一致上涨时可积极操作，分化时轻仓操作，高波动时暂停短线。
+
+**新增 ATR 波动率分析：**
+
+```python
+from scripts.data import compute_atr, detect_volatility_regime
+
+atr = compute_atr(kline["bars"], period=14)
+regime = detect_volatility_regime(atr["atr_pct"])  # "低波动"/"正常波动"/"高波动"
+# atr 输出:
+#   "atr" — ATR值(元)
+#   "atr_pct" — ATR占价格百分比
+#   "stop_loss_aggressive" — 激进止损位 (close - atr×2)
+#   "stop_loss_conservative" — 保守止损位 (close - atr×3)
+#   "take_profit_short" — 短线止盈位 (close + atr×1.5)
+#   "take_profit_swing" — 波段止盈位 (close + atr×3)
+```
+
+**新增 RSI 超买超卖分析：**
+
+```python
+from scripts.data import compute_rsi
+
+closes = [b["close"] for b in kline["bars"] if b.get("close")]
+rsi = compute_rsi(closes, period=14)
+# rsi 输出:
+#   "rsi" — RSI值(0-100)
+#   "signal" — "超买"/"超卖"/"正常偏强"/"正常偏弱"
+#   "extreme" — 是否极值(>75或<25)
+```
+
+**v1.7.0 新增日级别趋势定位：**
+
+```python
+from scripts.data import detect_daily_trend
+
+bars = kline.get("bars", [])
+trend = detect_daily_trend(bars)
+# trend 输出:
+#   "trend" — "上升趋势"/"下降趋势"/"横盘"
+#   "strength" — "强"/"中"/"弱"
+#   "ma_60_position" — 价格 vs MA60: "之上"/"之下"/"附近"
+#   "duration_days" — 当前趋势持续天数（估算）
+#   "detail" — 一句话描述
+```
+
+日级别趋势为短线提供中线大背景：上升趋势中做多可放宽止损，下降趋势中抢反弹需更谨慎。
+
+### K线形态（scripts/patterns.py）
+
+```python
+from scripts.patterns import detect_candle_patterns, simple_direction
+
+patterns = detect_candle_patterns(kline["bars"])
+dir_signal = simple_direction(kline["bars"])
+```
+
+- `detect_candle_patterns(bars)` → 自动检测十字星/锤子线/上吊线/看涨吞没/看跌吞没/三连阳/三连阴/晨星/暮星
+- `simple_direction(bars)` → 基于最近3根K线实体方向输出"连续走强"/"偏强"/"连续走弱"/"偏弱"/"震荡"
+
+LLM 将 patterns 和 dir_signal 结合 `ss` 中的均线/量比/资金进行分析。补充人工判断：
+- 均线：全上方=多头 / 全下方=空头 / 交错=震荡
+- 量比：>1.5放量 / 0.5-1.5正常 / <0.5缩量
+- 资金：f_ok=True时才判断，正=偏多负=偏空
+- 支撑：S1(日内最低) / S2=min(近20日最低×0.98, MA20)
+- 阻力：R1(日内最高) / R2=max(MA5, MA10)
+- 趋势幅度：近5日累计±>10%=超涨/超卖区间，反转概率增加；急跌后缩量反弹=企稳信号(空头衰竭，不确认反转)；急跌后放量反弹=反转信号增强(资金主动承接，偏强)；急涨后放量滞涨=短期见顶
+
+### 事件归因（仅n_ok=True时）
+
+全局快讯匹配 → 个股新闻 → 题材标签。
+
+### 美股传导
+
+```
+盘前=高 → 上午盘=中高 → 下午盘=低(权重0.5)
+盘后=标注盘中数据 → 周末=标注周末间隔
+三指数同向=方向一致；跟跌>跟涨经验
+```
+
+---
+
+## Step 5：综合判断（scripts/scoring.py v1.6.0）
+
+### 5-A 方向概率（带权重因子累加）
+
+```python
+from scripts.scoring import (
+    compute_total_score, score_moving_average, score_volume,
+    score_fund_flow, score_events, score_us, score_trend_amplitude,
+    score_multi_timeframe, relative_strength, score_relative_strength,
+)
+
+scores = {
+    "ma": score_moving_average(ss),
+    "volume": score_volume(ss),
+    "fund_flow": score_fund_flow(f_net),     # f_net 来自东财接口
+    "events": score_events(has_pos_news, has_neg_news),
+    "us": score_us(ss.get("us_dir", ""), time_window),
+    "trend": score_trend_amplitude(ss.get("trend_5d", 0)),
+}
+result = compute_total_score(scores, time_window)
+
+# v1.6.0: 多周期均线共振（可选，需60分/15分K线数据）
+multi = score_multi_timeframe(
+    ma_daily=ss.get("ma_pos", ""),
+    ma_60min=ma_60min,   # 从 baidu_kline_with_ma(code, "60") 获取
+    ma_15min=ma_15min,   # 从 baidu_kline_with_ma(code, "15") 获取
+)
+# multi: {"resonance", "score"(1/-1/0), "detail"}
+
+# v1.6.0: 相对强度（需大盘/板块数据）
+if market_change is not None or industry_change is not None:
+    rs = relative_strength(
+        stock_change=ss.get("chg", 0) / 100,
+        industry_index_changes={"半导体": industry_change} if industry_change else None,
+        market_change=market_change,
+    )
+    rs_score = score_relative_strength(rs)
+    if rs_score != 0:
+        scores["relative_strength"] = rs_score
+        # 重新计算
+        result = compute_total_score(scores, time_window)
+```
+
+`compute_total_score` 返回：
+- `total` — 总分（各因子×权重求和）
+- `n_active` — 有效因子数
+- `direction` — "偏多"/"偏空"/"震荡"
+- `probability` — "70%+"/"60%+"/None（n<3时不输出概率）
+- `confidence` — "高"/"中"/"低"
+- `factor_detail` — 各因子得分详情字符串
+
+评分规则：
+| 因子 | 计算方式 | 权重 |
+|------|---------|------|
+| 均线系统 | `score_moving_average(ss)` | 1.0 |
+| 量价关系 | `score_volume(ss)` | 1.0 |
+| 资金面 | `score_fund_flow(f_net)` | f_ok=False不计 |
+| 事件面 | `score_events(pos, neg)` | n_ok=False不计 |
+| 美股传导 | `score_us(us_dir, time_window)` | 时间窗口修正 |
+| 趋势幅度 | `score_trend_amplitude(trend_5d)` | 1.0 |
+| 相对强度 | `score_relative_strength(rs)` | 仅strength_score≥1或≤-1时生效 |
+
+概率规则：
+- total ≥ 2.0 → 偏多70%+   |   total ≤ -2.0 → 偏空70%+
+- total ≥ 1.0 → 偏多60%+   |   total ≤ -1.0 → 偏空60%+
+- 其他 → 震荡
+- 有效因子 < 3 → 不输出概率，改输出方向倾向
+
+### 5-B/5-C/5-D
+
+关键价位：R1/R2/S1/S2。时段预判按前置判断1输出。
+止损（v1.6.0 ATR动态止损）：激进=close - ATR×2, 保守=close - ATR×3。
+止盈（v1.6.0 ATR动态止盈）：短线=close + ATR×1.5, 波段=close + ATR×3。
+市场波动率判断：`detect_volatility_regime(atr_pct)` — 高波动/正常/低波动。
+
+### 5-E 自动交易计划（v1.8.0 新增）
+
+**v1.8.0 新增：run_analysis() 自动生成交易计划**
+
+在综合判断和日级别趋势完成后，引擎自动生成包含入场参考、止损价、止盈价、止损幅度的完整交易计划：
+
+- **偏多**方向：入场参考 S1~S2 区间，激进止损 = close - ATR×2，短线止盈 = close + ATR×1.5
+- **偏空**方向：入场参考当前价，做空止损 = 价格 + ATR×2，做空止盈 = 价格 - ATR×1.5
+- **震荡**方向：信号不足，不生成交易计划
+- **高波动市场**：自动降级为"观望(高波动)"，不生成具体计划
+
+**v2.0.0 尾盘竞价提醒：** 当系统时间处于 14:57-15:00 时，引擎自动标注尾盘集合竞价阶段，并在 trade_plan 中增加尾盘竞价提醒："当前处于尾盘集合竞价阶段(14:57-15:00)，最终收盘价可能偏离当前价"。
+
+交易计划位于 `results["trade_plan"]`，包含方向、入场参考、止损价/幅度、止盈价/幅度、波动率环境、市场环境。
+
+### 5-F 多周期验证（v1.6.0 新增）
+
+当获取到60分钟和15分钟K线时，调用 `score_multi_timeframe()` 验证日线趋势的持续性：
+- 共振向上：日线/60分/15分均线全部多头 → 趋势可靠性高
+- 共振向下：全部空头 → 下跌趋势确认
+- 方向矛盾：大周期与小周期方向不一致 → 谨慎操作，可能变盘
+
+---
+
+## Step 6：分析引擎与批量筛选（v1.6.0/v1.7.0/v2.0.0）
+
+### 6-A 一键分析引擎 (v1.6.0)
+
+`run_analysis()` 替代上述手动调用流程，一次性完成全部分析并返回结构化结果：
+
+```python
+from scripts.engine import run_analysis
+
+result = run_analysis(
+    code="002475",
+    name="立讯精密",
+    time_window="盘前",
+    fund_flow_net=None,          # 不传则自动用 infer_fund_activity() 推断
+    has_positive_news=True,      # 正面新闻
+    has_negative_news=False,
+    industry_name="消费电子",    # 行业名（相对强度用）
+    market_change=0.01,          # 大盘涨跌幅（小数）
+    industry_change=0.02,        # 板块涨跌幅（小数）
+    use_cache=True,              # 启用缓存
+)
+```
+
+返回结构（简化，v2.0.0 新增字段）：
+```json
+{
+  "code": "002475",
+  "name": "立讯精密",
+  "time_window": "盘前",
+  "session_phase": "盘前",                                              # v2.0.0 尾盘竞价时自动切换
+  "summary": { /* build_short_summary 完整输出 */ },
+  "kline_valid": { "valid": true, "warnings": [] },
+  "patterns": ["三连阳"],
+  "simple_direction": "偏强",
+  "atr": { "atr": 1.2, "atr_pct": 1.5, "stop_loss_aggressive": 78.6, ... },
+  "rsi": { "rsi": 65.3, "signal": "正常偏强", "extreme": false },
+  "fund_activity": { "activity_label": "放量", "inferred_direction": "放量上涨", ... },  # v1.7.0
+  "daily_trend": { "trend": "上升趋势", "strength": "中", ... },                         # v1.7.0
+  "momentum": { "momentum": "加速上涨", "size_trend": "扩大", ... },                     # v2.0.0 L4
+  "volume_profile": { "volume_pattern": "放量上涨", "accumulation_signal": false, ... },  # v2.0.0 L1
+  "factor_scores": { "ma": 1, "volume": 0, "fund_flow": 1, ... },
+  "verdict": { "direction": "偏多", "probability": "70%+", ... },
+  "limit_status": { "limit_status": "正常", "locked_up": false, ... },                    # v1.9.0
+  "industry_comparison": { "relative_position": "领跌", "peers_analyzed": 4, ... },          # v1.9.0
+  "relative_strength": { "label_vs_market": "领涨", ... },
+  "trade_plan": { "方向": "做多", "入场参考": "78.50~79.80", ... },                       # v1.8.0
+  "prediction_recorded": true,
+  "warnings": []
 }
 ```
 
-### Python 预处理
+内部执行流程（v2.0.0 完整版）：
+```
+三指数(缓存) → 个股行情(缓存) → K线(缓存) → 美股
+   → build_short_summary → validate_kline → infer_fund_activity
+   → detect_candle_patterns → simple_direction
+   → compute_atr → compute_rsi
+   → detect_momentum_shift (v2.0.0 L4) + analyze_volume_profile (v2.0.0 L1)
+   → 6因子评分 → compute_total_score
+   → relative_strength → check_limit_status (v1.9.0) → industry_peer_comparison (v1.9.0)
+   → detect_daily_trend (v1.7.0) → record_prediction
+```
+
+### 6-B 短线信号历史回测（v2.0.0 新增）
+
+对指定股票在历史数据中逐日回放评分逻辑，验证预测准确率：
 
 ```python
-# 折溢价
-prem = (price - nav) / nav * 100 if nav > 0 else 0
-fund["prem_pct"] = round(prem, 2)
+from scripts.backtest_st import backtest_short_term, print_backtest_report
 
-# 总费率
-fund["total_fee"] = fund["mgmt_fee"] + fund["cust_fee"]
-
-# TOP10集中度
-if fund["holdings"]:
-    fund["holding_top_pct"] = sum(h["pct"] for h in fund["holdings"])
+# 回测最近120个交易日
+backtest = backtest_short_term("002475", lookback=120)
+print(print_backtest_report(backtest))
 ```
+
+输出示例：
+```
+=== 短线信号回测报告: 002475 ===
+回测周期: 99个交易日
+（注意：仅基于技术面因子，不含美股/新闻数据，结果低于完整方案）
+
+信号准确率:
+  偏多: 65.3% (32/49) 均收益:+0.85%
+  偏空: 55.6% (10/18) 均收益:-0.62%
+  震荡: 40.6% (13/32)
+  总体: 55.6%
+
+策略收益: +12.34% vs 买入持有:+8.21%
+超额收益: +4.13%
+最大连败: 5次 | 盈亏比:1.52
+```
+
+注意：`backtest_short_term` 的回测是简化的——因为回放时无法获取真实的历史美股行情和新闻数据，所以只用了技术面因子（均线）。这是一个"技术面因子单独回测"，结果会略低于完整方案的准确率。
+
+### 6-C 批量筛选排序 (v1.7.0 新增)
+
+对多只股票统一调用 `run_analysis()`，按信号强度排序输出，适合板块轮动/自选股池筛选：
+
+```python
+from scripts.screener import screen_stocks, print_screen_results
+
+stock_list = [
+    {"code": "002475", "name": "立讯精密", "industry": "消费电子代工"},
+    {"code": "601138", "name": "工业富联", "industry": "消费电子代工"},
+    {"code": "300750", "name": "宁德时代", "industry": "电池"},
+]
+
+result = screen_stocks(stock_list, time_window="盘前", min_n_active=3)
+print(print_screen_results(result))
+```
+
+输出示例：
+```
+=== 批量筛选结果 ===
+共分析3只股票，3只成功
+
+排名 代码   名称       方向  总分 因子 均线  RSI      ATR
+───────────────────────────────────────────────
+1    002475 立讯精密  偏多  2.0  4    多头  正常偏弱 正常波动
+2    300750 宁德时代  震荡  0.0  3    震荡  正常偏弱 低波动
+3    601138 工业富联  偏空  -1.0 3    空头  正常偏弱 正常波动
+
+最佳信号: 002475 立讯精密 — 偏多(总分2.0), 均线多头, RSI正常偏弱
+```
+
+排序规则：偏多 > 震荡 > 偏空；同方向总分降序；同分有效因子数降序；同分同因子非高波动优先。
+
+### 6-D 自动分析摘要 (v2.1.0 新增)
+
+对 `run_analysis()` 返回的完整结果自动生成一句话分析摘要，适合报告开头快速呈现核心结论：
+
+```python
+from scripts.engine import summarize_analysis
+
+result = run_analysis(code="002475", name="立讯精密", time_window="盘前")
+summary = summarize_analysis(result)
+print(summary)
+# 输出示例：
+# 立讯精密(002475) 当前68.24(-8.30%)，均线震荡，加速下跌，放量下跌，市场高波动，判断偏空(60%+)，入场68.24止损63.30止盈72.50。
+```
+
+`summarize_analysis()` 从结果中自动提取：标的名称、当前价、涨跌幅、均线排列、动量方向、量价模式、异常状态（涨跌停/逼近等）、市场情绪、综合判断方向及概率、交易计划（入场/止损/止盈），拼接为一段完整的中文分析摘要。
+
+### 6-E 批量回测验证 (v2.1.0 新增)
+
+`screen_and_backtest()` 将批量筛选与回测验证结合，先筛选出信号最强的股票，再对 Top N 做历史回测，最终给出强推荐/弱推荐/不推荐：
+
+```python
+from scripts.screener import screen_and_backtest
+
+stock_list = [
+    {"code": "002475", "name": "立讯精密", "industry": "消费电子代工"},
+    {"code": "601138", "name": "工业富联", "industry": "消费电子代工"},
+    {"code": "300750", "name": "宁德时代", "industry": "电池"},
+]
+
+result = screen_and_backtest(stock_list, time_window="盘前", top_n=3)
+print(result["summary"])
+# 输出示例：共筛选3只，回测前3只。强推荐: 立讯精密(002475)
+
+# 查看详细回测结果
+for item in result["backtested_top"]:
+    print(f"{item['name']}: {item['final_verdict']} ({item['reason']})")
+```
+
+决策逻辑：
+- **强推荐**：筛选方向与回测方向一致，且回测准确率 > 60%
+- **弱推荐**：筛选方向与回测方向一致，且回测准确率 > 50%
+- **不推荐**：回测准确率不足或方向不一致
+
+返回结构包含 `screen_result`（原始筛选输出）、`backtested_top`（回测详情列表）、`recommendations`（强推荐标的）、`summary`（一句话概括）。
 
 ---
 
-## Step 2：基金质量评估
+## Step 7：输出报告
 
-### 2-A ETF质量（ETF类型必做）
-
-```
-跟踪误差 < 0.2% → 优  /  0.2-0.5% → 可接受  /  >0.5% → 差
-总费率(管理+托管) < 0.2% → 低  /  0.2-0.5% → 中  /  >0.5% → 高
-规模 > 50亿 → 大(流动性好)  /  10-50亿 → 中  /  <10亿 → 小(注意流动性)
-
-**换手率折算**：if 规模<10亿：换手率高可能虚高（规模过小导致），比较时优先看日均成交额绝对值而非换手率%。
-折溢价 |<1%| → 正常  /  >1% → 溢价偏高  /  <-1% → 折价(有机会)
-```
-
-**总评分**（5项加权，满分5分）：
-```
-费率低+1 / 跟踪误差小+1 / 规模大+1 / 折溢价正常+1 / 换手率>1%+1
-≥4分 → 推荐  /  3分 → 可考虑  /  ≤2分 → 不推荐
-```
-
-**历史业绩评估**（有数据时执行）：
-- 近1年收益 vs 基准：偏离<2%为正常跟踪 / >2%说明跟踪问题
-- 近3年收益：判断ETF长期跟踪能力
-- 分红年化率：ETF分红频率和金额（通常年中/年末分配）
-
-**持仓风格判断**（有重仓股时执行）：
-- 根据TOP10重仓股判断风格（成长/价值/均衡）
-- 单只重仓股>15%为集中，>20%为高度集中
-- 行业分布宽窄：是否集中在单一行业
-
-### 2-B 主动基金质量（主动类型必做）
-
-```
-基金经理任职 > 3年 → 经验丰富  /  1-3年 → 中等  /  <1年 → 新上任
-超额收益(相对基准) > 5%/年 → 优秀  /  2-5% → 良好  /  0-2% → 平庸  /  <0 → 差
-持仓集中度(Top10) > 60% → 集中  /  30-60% → 适中  /  <30% → 分散
-同类排名连续3年在前1/3 → 持续的
-```
-
-### 2-C 持仓分析与重仓股扫描（必做）
-
-**重仓股列表输出**（输出到报告中）：
-```
-TOP10重仓股：
-1. 股票A（XX%）— 行业 | PExx PBxx
-2. 股票B（XX%）— 行业 | PExx PBxx
-...
-```
-
-**批量扫描**：调用 `tencent_quote([股票代码列表])` 一次性获取所有重仓股的PE/PB/市值/当日涨跌幅。
-**跨市场处理**：A股用tencent_quote；港股/美股重仓股（代码含.HK/.US等）无法获取时，标注"海外上市股数据暂缺"并跳过该股扫描。
-
-**组合风格判断**：
-- 按重仓股PE中位数：<20=价值 / 20-40=均衡 / >40=成长
-- 按行业集中度：Top3行业>60%=集中 / 30-60%=适中 / <30%=分散
-- 按单只上限：>20%=高度集中风险 / 10-20%=适度 / <10%=分散
-
-**分析输出至报告中**：
-- 列出TOP5重仓股名称+占比+PE+涨跌
-- 判断组合风格和集中度
-- 评估整体持仓质量
-- 当用户问"买了什么股票"时，直接输出此分析
+顺序：
+1. **市场环境**（三大指数+涨跌+行业+美股+北向）
+2. **技术面**（均线→量→支撑阻力→K线形态→资金→动量趋势→成交量深度）
+3. **事件驱动**（新闻相关度+题材）
+4. **综合判断**（方向概率或方向倾向+价位+时段+止损）
+5. **风险声明**（数据来源+时间+缺失项列表）
 
 ---
 
-## Step 3：对比分析
+## Step 8：记录预测（复盘用）
 
-### 3-A 同类ETF对比（ETF类型必做）
+输出报告后，将本次预测记录到复盘系统：
 
-从同类ETF列表中获取数据源：`tencent_quote([同类ETF代码])` 批量拉取规模/换手率，并通过通道A未完成的基金数据源补充费率和跟踪误差。
+```python
+from scripts.tracker import record_prediction
 
-### 3-B 指数涨跌归因（有数据时执行）
-
-if 指数当日涨幅>1%或跌幅>1%:
-    搜索"指数名 上涨/下跌 原因" → 在报告中归因
-
-| 对比项 | 本基金 | 同类最优 | 同类中位 |
-|-------|-------|---------|---------|
-| 总费率 | X% | X% | X% |
-| 规模 | X亿 | X亿 | X亿 |
-| 近1年收益 | X% | X% | X% |
-| 跟踪误差 | X% | X% | X% |
-| 日均换手 | X% | X% | X% |
-
-标注本基金在各维度上的排位（前1/3、中、后1/3）。
-
-**同类最优推荐**：在同类对比结论中增加—if 本基金不是同类中规模最大：输出"同类最优：{最优基金代码}({规模}亿)"。
-
-
-**对比维度扩展**（有数据时一并对比）：
-- 近1年收益 vs 基准跟踪偏离度
-- 日均成交额（亿）
-- 近1年最大回撤
-- 成立以来年化收益率
-
-### 3-C 同类主动基金对比（主动类型选做）
-
----
-
-## Step 4：综合结论
-
-### ETF结论模板
-
-```
-## ETF评估：{基金名称}（{代码}）
-
-### 基本信息
-- 类型：ETF | 跟踪指数：{index_name}
-- 规模：{size_yi}亿 | 总费率：{total_fee}%
-- 场内价：{price} | 净值：{nav} | 折溢价：{prem_pct}%
-
-### 质量评分（共5分）：{score}/{5}
-{评分明细}
-
-### 持仓摘要（沿用Step 2-C分析结果）
-TOP10集中度：{holding_top_pct}%
-重仓股：{holding_list_str}（详见Step 2-C持仓分析）
-
-### 同类排名
-{同类对比结果}
-
-### 结论
-- {推荐/可考虑/不推荐}
-- 适用场景：{适合什么类型的投资者}
-- 风险提示：{规模风险/流动性风险/跟踪误差风险}
-
-### 风险声明
-> 以上分析基于公开数据，仅供参考，不构成投资建议。
-> 数据来源：{sources} 获取时间：{ts}
-> 缺失数据：{缺失项列表}
+record_prediction(
+    code=code,
+    name=name,
+    direction=result["direction"],
+    confidence=result.get("probability", "60%+"),
+    price=ss["p"],
+    factor_detail=result.get("factor_detail", ""),
+)
 ```
 
-### 主动基金结论模板
+### 自动回填（v1.8.0 新增）
 
-```
-## 基金评估：{基金名称}（{代码}）
+`auto_fill_pending()` 自动遍历 predictions.json 中尚未回填（result=None）的记录，对 >=3 日的预测获取最新价格并判定结果：
 
-### 基金经理
-{manager} — 任职{mgr_years}年 | 管理规模：{mgr_size}亿
+```python
+from scripts.tracker import auto_fill_pending
 
-### 业绩与排名
-近1年：{ret_1y}%（同类排名{rank_pct}%） | 超额收益：{excess}%/年
-
-### 持仓风格
-{style}风格 | TOP10集中度{holding_top_pct}% | {集中/适中/分散}
-
-### 结论
-- {推荐/可考虑/不推荐}
-- {适合长期持有/波段操作/一次性买入/定投}
+result = auto_fill_pending()
+# result: {"filled": 3, "skipped": 1, "errors": 0, "details": ["002475 2026-06-23 偏多→正确(+2.3%)", ...]}
 ```
 
----
+也可注入自定义行情函数：
+```python
+def my_quote(code):
+    return custom_api(code)
+auto_fill_pending(quote_fn=my_quote)
+```
 
-## 后验复盘
+### 复盘命令
 
-1. 每月检查：规模变化（连续3月下降>20%预警）、折溢价（>2%持续5日预警）
-2. 季度末检查：跟踪误差（>0.5%预警）、同类排名变化（跌出前50%预警）
-3. 基金经理变更时触发重新评估
-4. ETF清盘预警：规模<5000万或连续20日持有人<200人
+用户可随时查询预测准确率：
+
+```
+from scripts.tracker import print_review, review_accuracy
+
+# 输出可读复盘报告
+print_review(days=30)
+
+# 或获取统计数据
+stats = review_accuracy(days=30)
+```
 
 ---
 
 ## 相关
 
-- [[a-stock-data]] — 个股行情数据（ETF重仓股扫描用）
-- [[magnus-secular-analysis]] — 个股长线分析
-- [[temp-omni-analysis]] — 个股短线分析
+- [[scripts/data.py]] — 自建轻量数据通道
+- [[scripts/cache.py]] — 文件缓存
+- [[scripts/patterns.py]] — K线形态识别
+- [[scripts/scoring.py]] — 因子评分系统
+- [[scripts/backtest_st.py]] — 短线信号历史回测
+- [[scripts/tracker.py]] — 预测记录与复盘
